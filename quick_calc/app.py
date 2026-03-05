@@ -16,26 +16,44 @@ def format_decimal(d: Decimal) -> str:
 
 @dataclass
 class CalculatorSession:
-    """
-    Controller / input-layer independent of UI toolkit.
-    Tkinter buttons will call these methods.
-    """
     core: Core = field(default_factory=Core)
-    _display: str = "0"
+    _display: str = "0"              # what UI shows (expression)
+    _current_input: str = "0"        # the number user is typing
     _left: Optional[Decimal] = None
     _op: Optional[str] = None
     _reset_next_input: bool = False
     _error: Optional[str] = None
+    _last_left_str: Optional[str] = None   # store left operand as text for pretty expression
+    _last_right_str: Optional[str] = None  # store right operand as text for pretty expression
 
     def get_display(self) -> str:
         return self._error if self._error is not None else self._display
 
+    def _sync_display(self) -> None:
+        """Update expression line depending on current state."""
+        if self._error is not None:
+            self._display = self._error
+            return
+
+        if self._op is None or self._left is None:
+            # Only typing a single number
+            self._display = self._current_input
+            return
+
+        # We have left + operator, and maybe right being typed
+        left_txt = self._last_left_str if self._last_left_str is not None else format_decimal(self._left)
+        right_txt = "" if self._reset_next_input else self._current_input
+        self._display = f"{left_txt}{self._op}{right_txt}"
+
     def press_clear(self) -> None:
         self._display = "0"
+        self._current_input = "0"
         self._left = None
         self._op = None
         self._reset_next_input = False
         self._error = None
+        self._last_left_str = None
+        self._last_right_str = None
 
     def press_digit(self, ch: str) -> None:
         if self._error is not None:
@@ -45,34 +63,40 @@ class CalculatorSession:
             raise ValueError("press_digit expects a single digit 0-9")
 
         if self._reset_next_input:
-            self._display = "0"
+            self._current_input = "0"
             self._reset_next_input = False
 
-        if self._display == "0":
-            self._display = ch
+        if self._current_input == "0":
+            self._current_input = ch
         else:
-            self._display += ch
+            self._current_input += ch
+
+        self._sync_display()
 
     def press_dot(self) -> None:
         if self._error is not None:
             self.press_clear()
 
         if self._reset_next_input:
-            self._display = "0"
+            self._current_input = "0"
             self._reset_next_input = False
 
-        if "." not in self._display:
-            self._display += "."
+        if "." not in self._current_input:
+            self._current_input += "."
+
+        self._sync_display()
 
     def press_sign(self) -> None:
         if self._error is not None:
             self.press_clear()
 
-        if self._display.startswith("-"):
-            self._display = self._display[1:]
+        if self._current_input.startswith("-"):
+            self._current_input = self._current_input[1:]
         else:
-            if self._display != "0":
-                self._display = "-" + self._display
+            if self._current_input != "0":
+                self._current_input = "-" + self._current_input
+
+        self._sync_display()
 
     def press_op(self, op: str) -> None:
         if op not in {"+", "-", "*", "/"}:
@@ -81,20 +105,25 @@ class CalculatorSession:
         if self._error is not None:
             return
 
-        current = to_decimal(self._display)
+        current_dec = to_decimal(self._current_input)
 
         if self._left is None:
-            self._left = current
+            self._left = current_dec
+            self._last_left_str = self._current_input
         else:
+            # chaining operations: compute intermediate result if user already typed right operand
             if self._op is not None and not self._reset_next_input:
-                result = self._apply(self._left, self._op, current)
+                result = self._apply(self._left, self._op, current_dec)
                 if result is None:
+                    self._sync_display()
                     return
                 self._left = result
-                self._display = format_decimal(result)
+                self._last_left_str = format_decimal(result)
+                self._current_input = self._last_left_str
 
         self._op = op
         self._reset_next_input = True
+        self._sync_display()
 
     def press_equals(self) -> None:
         if self._error is not None:
@@ -102,15 +131,27 @@ class CalculatorSession:
         if self._left is None or self._op is None:
             return
 
-        right = to_decimal(self._display)
-        result = self._apply(self._left, self._op, right)
+        right_str = self._current_input
+        right_dec = to_decimal(right_str)
+
+        result = self._apply(self._left, self._op, right_dec)
         if result is None:
+            self._sync_display()
             return
 
-        self._display = format_decimal(result)
+        left_txt = self._last_left_str if self._last_left_str is not None else format_decimal(self._left)
+        res_txt = format_decimal(result)
+
+        # Show full action: 5+3=8
+        self._display = f"{left_txt}{self._op}{right_str}={res_txt}"
+
+        # Reset state, but keep current_input as result so next operations can continue naturally
+        self._current_input = res_txt
         self._left = None
         self._op = None
         self._reset_next_input = True
+        self._last_left_str = None
+        self._last_right_str = None
 
     def _apply(self, a: Decimal, op: str, b: Decimal) -> Optional[Decimal]:
         try:
