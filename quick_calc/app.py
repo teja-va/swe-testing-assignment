@@ -8,12 +8,6 @@ from quick_calc.core import Core, to_decimal
 
 
 def format_decimal(d: Decimal) -> str:
-    """
-    Format Decimal for display:
-    - remove trailing zeros
-    - avoid scientific notation for typical calculator usage
-    """
-    # Normalize can produce exponent; quantize is overkill.
     s = format(d, "f")
     if "." in s:
         s = s.rstrip("0").rstrip(".")
@@ -23,10 +17,8 @@ def format_decimal(d: Decimal) -> str:
 @dataclass
 class CalculatorSession:
     """
-    A simple "button-driven" calculator session.
-    Supports: digits, '.', unary '-' via typing '-'
-    Operations: +, -, *, /
-    Buttons: '=', 'C'
+    Controller / input-layer independent of UI toolkit.
+    Tkinter buttons will call these methods.
     """
     core: Core = field(default_factory=Core)
     _display: str = "0"
@@ -47,7 +39,6 @@ class CalculatorSession:
 
     def press_digit(self, ch: str) -> None:
         if self._error is not None:
-            # If in error state, start fresh on input
             self.press_clear()
 
         if ch not in "0123456789":
@@ -74,9 +65,6 @@ class CalculatorSession:
             self._display += "."
 
     def press_sign(self) -> None:
-        """
-        Toggle sign of current display value.
-        """
         if self._error is not None:
             self.press_clear()
 
@@ -91,7 +79,6 @@ class CalculatorSession:
             raise ValueError("Unsupported operation")
 
         if self._error is not None:
-            # Can't proceed while error is shown; keep error until cleared or new input.
             return
 
         current = to_decimal(self._display)
@@ -99,7 +86,6 @@ class CalculatorSession:
         if self._left is None:
             self._left = current
         else:
-            # If chaining operations, compute intermediate result first
             if self._op is not None and not self._reset_next_input:
                 result = self._apply(self._left, self._op, current)
                 if result is None:
@@ -142,38 +128,113 @@ class CalculatorSession:
         return None
 
 
-def main() -> None:
-    """
-    Minimal CLI runner (not required for tests, but useful to demonstrate 'run app').
-    Example:
-      digits: 5  +  3  =
-      C clears
-      q quits
-    """
-    s = CalculatorSession()
-    print("Quick-Calc (CLI). Type digits, '.', '+-*/', '=', 'C' to clear, 'q' to quit.")
-    print("Display:", s.get_display())
+# ----------------------- Tkinter UI -----------------------
 
-    while True:
-        token = input("> ").strip()
-        if token.lower() in {"q", "quit", "exit"}:
-            break
-        if token == "C":
-            s.press_clear()
-        elif token == "=":
-            s.press_equals()
-        elif token == ".":
-            s.press_dot()
-        elif token in {"+", "-", "*", "/"}:
-            s.press_op(token)
-        elif token == "±":
-            s.press_sign()
-        elif token.isdigit():
-            for ch in token:
-                s.press_digit(ch)
-        else:
-            print("Unknown input. Use digits, '.', '+-*/', '=', 'C', 'q'.")
-        print("Display:", s.get_display())
+class QuickCalcTk:
+    """
+    Tkinter UI that delegates all logic to CalculatorSession.
+    Provides stable 'button names' for integration tests.
+    """
+
+    def __init__(self, root):
+        import tkinter as tk
+
+        self.tk = tk
+        self.root = root
+        self.root.title("Quick-Calc")
+
+        self.session = CalculatorSession()
+
+        self.display_var = tk.StringVar(value=self.session.get_display())
+
+        # Display
+        display = tk.Entry(
+            root,
+            textvariable=self.display_var,
+            justify="right",
+            font=("Arial", 18),
+            state="readonly",
+            readonlybackground="white",
+        )
+        display.grid(row=0, column=0, columnspan=4, sticky="nsew", padx=8, pady=8, ipady=8)
+
+        # Buttons (store references for tests)
+        self.buttons = {}
+
+        def add_btn(text, r, c, cmd, colspan=1):
+            b = tk.Button(root, text=text, command=cmd, font=("Arial", 14))
+            b.grid(row=r, column=c, columnspan=colspan, sticky="nsew", padx=4, pady=4, ipady=6)
+            self.buttons[text] = b
+
+        # Row 1
+        add_btn("C", 1, 0, self._on_clear)
+        add_btn("±", 1, 1, self._on_sign)
+        add_btn("/", 1, 2, lambda: self._on_op("/"))
+        add_btn("*", 1, 3, lambda: self._on_op("*"))
+
+        # Row 2
+        add_btn("7", 2, 0, lambda: self._on_digit("7"))
+        add_btn("8", 2, 1, lambda: self._on_digit("8"))
+        add_btn("9", 2, 2, lambda: self._on_digit("9"))
+        add_btn("-", 2, 3, lambda: self._on_op("-"))
+
+        # Row 3
+        add_btn("4", 3, 0, lambda: self._on_digit("4"))
+        add_btn("5", 3, 1, lambda: self._on_digit("5"))
+        add_btn("6", 3, 2, lambda: self._on_digit("6"))
+        add_btn("+", 3, 3, lambda: self._on_op("+"))
+
+        # Row 4
+        add_btn("1", 4, 0, lambda: self._on_digit("1"))
+        add_btn("2", 4, 1, lambda: self._on_digit("2"))
+        add_btn("3", 4, 2, lambda: self._on_digit("3"))
+        add_btn("=", 4, 3, self._on_equals)
+
+        # Row 5
+        add_btn("0", 5, 0, lambda: self._on_digit("0"), colspan=2)
+        add_btn(".", 5, 2, self._on_dot)
+
+        # Layout weights
+        root.grid_rowconfigure(0, weight=0)
+        for r in range(1, 6):
+            root.grid_rowconfigure(r, weight=1)
+        for c in range(4):
+            root.grid_columnconfigure(c, weight=1)
+
+    def _refresh(self):
+        self.display_var.set(self.session.get_display())
+
+    def _on_digit(self, d: str):
+        self.session.press_digit(d)
+        self._refresh()
+
+    def _on_dot(self):
+        self.session.press_dot()
+        self._refresh()
+
+    def _on_sign(self):
+        self.session.press_sign()
+        self._refresh()
+
+    def _on_op(self, op: str):
+        self.session.press_op(op)
+        self._refresh()
+
+    def _on_equals(self):
+        self.session.press_equals()
+        self._refresh()
+
+    def _on_clear(self):
+        self.session.press_clear()
+        self._refresh()
+
+
+def main() -> None:
+    import tkinter as tk
+
+    root = tk.Tk()
+    QuickCalcTk(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":
